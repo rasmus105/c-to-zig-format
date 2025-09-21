@@ -4,8 +4,11 @@
 //! The official C syntax for a format specifier is: `%[flags][width][.precision][length]specifier`
 //! The official Zig syntax for a format specifier is: `{[argument][specifier]:[fill][alignment][width][.precision]}`
 //!
-//! This implementation will only convert format specifiers as accurately as possible. It will not modify other
-//! parst of the string, and it is therefore not possible to always keep the exact same meaning.
+//! This implementation is not perfect, and there are several cases where the conversion will not be exact.
+//! E.g.:
+//!  - "%#x" in C means to prefix the output with "0x" if the value is non-zero, but Zig does not have a direct equivalent.
+//!     This will instead be converted to "{x:0>}", which will pad the output with leading zeros, but will not add the "0x" prefix.
+
 const std = @import("std");
 
 const LengthModifier = enum {
@@ -17,53 +20,6 @@ const LengthModifier = enum {
     z,
     t,
     L,
-};
-
-const CSpecifier = enum {
-    d,
-    i,
-    u,
-    f,
-    F,
-    e,
-    E,
-    g,
-    G,
-    x,
-    X,
-    o,
-    s,
-    c,
-    p,
-    a,
-    A,
-
-    pub fn from_char(c: u8) ?CSpecifier {
-        return switch (c) {
-            'd' => .d,
-            'i' => .i,
-            'u' => .u,
-            'f' => .f,
-            'F' => .F,
-            'e' => .e,
-            'E' => .E,
-            'g' => .g,
-            'G' => .G,
-            'x' => .x,
-            'X' => .X,
-            'o' => .o,
-            's' => .s,
-            'c' => .c,
-            'p' => .p,
-            'a' => .a,
-            'A' => .A,
-            else => null,
-        };
-    }
-
-    pub fn toZigSpecifier(self: CSpecifier) ZigSpecifier {
-        return ZigSpecifier.from_c_specifier(self);
-    }
 };
 
 const ZigSpecifier = enum {
@@ -87,20 +43,21 @@ const ZigSpecifier = enum {
     any,
     f,
 
-    pub fn from_c_specifier(c: CSpecifier) ZigSpecifier {
+    pub fn from_c_specifier(c: u8) !ZigSpecifier {
         return switch (c) {
-            .d, .i => .d,
-            .u => .u,
-            .f, .F => .f,
-            .e, .E => .e,
-            .g, .G => .f, // Zig does not have a 'g' specifier
-            .x => .x,
-            .X => .X,
-            .o => .o,
-            .s => .s,
-            .c => .c,
-            .p => .t, // pointer
-            .a, .A => .f, // Zig does not have an 'a' specifier
+            'd', 'i' => .d,
+            'u' => .u,
+            'f', 'F' => .f,
+            'e', 'E' => .e,
+            'g', 'G' => .f, // Zig does not have a 'g' specifier
+            'x' => .x,
+            'X' => .X,
+            'o' => .o,
+            's' => .s,
+            'c' => .c,
+            'p' => .t, // pointer
+            'a', 'A' => .f, // Zig does not have an 'a' specifier
+            else => return error.FormatError,
         };
     }
 
@@ -182,12 +139,12 @@ fn handle_conversion(
     width: ?u32,
     precision: ?u32,
     length: ?LengthModifier,
-    c_specifier: CSpecifier,
+    c_specifier: ZigSpecifier,
     format_buffer: *FormatBuffer,
 ) !void {
     _ = length; // currently unused
     try format_buffer.addChar('{');
-    try format_buffer.addString(c_specifier.toZigSpecifier().toString());
+    try format_buffer.addString(c_specifier.toString());
 
     if (flags == null and width == null and precision == null) {
         // no flags, width, or precision
@@ -233,7 +190,6 @@ pub fn cToZigFormat(comptime allocator: std.mem.Allocator, c_format: []const u8)
     var width: ?u32 = null; // e.g. 2, 10, 256, ...
     var precision: ?u32 = null; // e.g. .2, .10, .256, ...
     var length: ?LengthModifier = null; // e.g. h, hh, l, ll, j, z, t, L
-    var c_specifier: ?CSpecifier = null; // e.g. d, i, u, f, F, e, E, g, G, x, X, o, s, c, p, a, A
 
     var state: State = .start;
 
@@ -360,7 +316,7 @@ pub fn cToZigFormat(comptime allocator: std.mem.Allocator, c_format: []const u8)
                     width,
                     precision,
                     length,
-                    CSpecifier.from_char(c) orelse return error.FormatError,
+                    try ZigSpecifier.from_c_specifier(c),
                     &zig_format,
                 );
 
@@ -369,7 +325,6 @@ pub fn cToZigFormat(comptime allocator: std.mem.Allocator, c_format: []const u8)
                 width = null;
                 precision = null;
                 length = null;
-                c_specifier = null;
                 state = .start;
             },
             else => {
@@ -427,4 +382,14 @@ test "basic specifier conversion" {
 
         try std.testing.expectEqualSlices(u8, expected, result);
     }
+}
+
+test "hex with width specifier" {
+    const c_format = "Memory address: %08x\n";
+    const expected = "Memory address: {x:0>8}\n";
+
+    const result = try cToZigFormat(std.testing.allocator, c_format);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualSlices(u8, expected, result);
 }
