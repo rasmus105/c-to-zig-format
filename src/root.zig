@@ -86,42 +86,6 @@ const ZigSpecifier = enum {
     }
 };
 
-const FormatBuffer = struct {
-    data: std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-
-    fn init(allocator: std.mem.Allocator, size: usize) !FormatBuffer {
-        return FormatBuffer{
-            .data = try std.ArrayList(u8).initCapacity(allocator, size),
-            .allocator = allocator,
-        };
-    }
-
-    fn deinit(self: *FormatBuffer) void {
-        self.data.deinit(self.allocator);
-    }
-
-    fn addChar(self: *FormatBuffer, c: u8) !void {
-        try self.data.append(self.allocator, c);
-    }
-
-    fn addString(self: *FormatBuffer, str: []const u8) !void {
-        try self.data.appendSlice(self.allocator, str);
-    }
-
-    fn addInt(self: *FormatBuffer, comptime T: type, value: T) !void {
-        try self.data.print(self.allocator, "{d}", .{value});
-    }
-
-    fn toOwnedSlice(self: *FormatBuffer) ![]u8 {
-        return self.data.toOwnedSlice(self.allocator);
-    }
-
-    fn items(self: *const FormatBuffer) []const u8 {
-        return self.data.items;
-    }
-};
-
 const State = enum {
     start, // not processing format specifier
     percent_found, // '%' found, next should be flag, width, precision, length, or specifier
@@ -140,7 +104,8 @@ fn handle_conversion(
     precision: ?u32,
     length: ?LengthModifier,
     c_specifier: ZigSpecifier,
-    format_buffer: *FormatBuffer,
+    comptime T: type,
+    format_buffer: *T,
 ) !void {
     _ = length; // currently unused
     try format_buffer.addChar('{');
@@ -182,10 +147,7 @@ fn handle_conversion(
     try format_buffer.addChar('}');
 }
 
-pub fn cToZigFormat(comptime allocator: std.mem.Allocator, c_format: []const u8) ![]u8 {
-    var zig_format: FormatBuffer = try FormatBuffer.init(allocator, c_format.len * 1);
-    errdefer zig_format.deinit();
-
+pub fn convert_from_c_to_zig(comptime T: type, zig_format: *T, c_format: []const u8) !void {
     var flags: ?[5]u8 = null; // possible flags: '-', '+', ' ', '#', '0'
     var width: ?u32 = null; // e.g. 2, 10, 256, ...
     var precision: ?u32 = null; // e.g. .2, .10, .256, ...
@@ -317,7 +279,8 @@ pub fn cToZigFormat(comptime allocator: std.mem.Allocator, c_format: []const u8)
                     precision,
                     length,
                     try ZigSpecifier.from_c_specifier(c),
-                    &zig_format,
+                    T,
+                    zig_format,
                 );
 
                 // reset all state
@@ -338,8 +301,128 @@ pub fn cToZigFormat(comptime allocator: std.mem.Allocator, c_format: []const u8)
             return error.FormatError;
         }
     }
+}
+
+// ===========================================================================
+// Runtime Function
+// ===========================================================================
+
+const FormatBuffer = struct {
+    data: std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator, size: usize) !FormatBuffer {
+        return FormatBuffer{
+            .data = try std.ArrayList(u8).initCapacity(allocator, size),
+            .allocator = allocator,
+        };
+    }
+
+    fn deinit(self: *FormatBuffer) void {
+        self.data.deinit(self.allocator);
+    }
+
+    fn addChar(self: *FormatBuffer, c: u8) !void {
+        try self.data.append(self.allocator, c);
+    }
+
+    fn addString(self: *FormatBuffer, str: []const u8) !void {
+        try self.data.appendSlice(self.allocator, str);
+    }
+
+    fn addInt(self: *FormatBuffer, comptime T: type, value: T) !void {
+        try self.data.print(self.allocator, "{d}", .{value});
+    }
+
+    fn toOwnedSlice(self: *FormatBuffer) ![]u8 {
+        return self.data.toOwnedSlice(self.allocator);
+    }
+
+    fn items(self: *const FormatBuffer) []const u8 {
+        return self.data.items;
+    }
+};
+
+pub fn cToZigFormat(comptime allocator: std.mem.Allocator, c_format: []const u8) ![]u8 {
+    var zig_format: FormatBuffer = try FormatBuffer.init(allocator, c_format.len * 1);
+    errdefer zig_format.deinit();
+
+    try convert_from_c_to_zig(FormatBuffer, &zig_format, c_format);
 
     return zig_format.toOwnedSlice();
+}
+
+// ===========================================================================
+// Compile-time Function
+// ===========================================================================
+
+// functions can return error so that the declarations match `FormatBuffer`
+const ComptimeFormatBuffer = struct {
+    data: []u8,
+    len: usize = 0,
+
+    pub fn init(buf: []u8) !ComptimeFormatBuffer {
+        return ComptimeFormatBuffer{
+            .data = buf,
+            .len = 0,
+        };
+    }
+
+    pub fn addChar(self: *ComptimeFormatBuffer, c: u8) !void {
+        self.data[self.len] = c;
+        self.len += 1;
+    }
+
+    pub fn addString(self: *ComptimeFormatBuffer, str: []const u8) !void {
+        @memcpy(self.data[self.len..(self.len + str.len)], str);
+        self.len += str.len;
+    }
+
+    pub fn addInt(self: *ComptimeFormatBuffer, comptime T: type, value: T) !void {
+        const written = std.fmt.bufPrint(self.data[self.len..], "{d}", .{value}) catch unreachable;
+        self.len += written.len;
+    }
+
+    pub fn toOwnedSlice(self: *ComptimeFormatBuffer) ![]u8 {
+        return self.data[0..self.len];
+    }
+
+    pub fn items(self: *const ComptimeFormatBuffer) ![]const u8 {
+        return self.data[0..self.len];
+    }
+
+    pub fn getLen(self: *ComptimeFormatBuffer) usize {
+        return self.len;
+    }
+};
+
+fn getZigFormatLenFromCFormat(comptime c_format: []const u8) usize {
+    // allocate generous size (FIXME can overflow, though VERY unlikely to happen!)
+    // when the input buffer is small, it seems more likely the input string consists
+    // solely of conversion specifiers.
+    const max_len = if (c_format.len < 64) 255 else c_format.len * 3;
+    var buf: [max_len]u8 = undefined;
+    var zig_format: ComptimeFormatBuffer = comptime try ComptimeFormatBuffer.init(&buf);
+
+    comptime convert_from_c_to_zig(ComptimeFormatBuffer, &zig_format, c_format) catch |err| {
+        @compileError("Invalid format, error: " ++ err);
+    };
+
+    return zig_format.getLen();
+}
+
+// this approach seems sub-optimal, since the string is parsed multiple times,
+// though I have been unable to find a better solution, since comptime var pointers
+// can't be referenced at runtime.
+pub fn cToZigFormatComptime(comptime c_format: []const u8) [getZigFormatLenFromCFormat(c_format)]u8 {
+    var buf: [getZigFormatLenFromCFormat(c_format)]u8 = undefined;
+    var zig_format: ComptimeFormatBuffer = try ComptimeFormatBuffer.init(&buf);
+
+    comptime convert_from_c_to_zig(ComptimeFormatBuffer, &zig_format, c_format) catch |err| {
+        @compileError("Invalid format, error: " ++ err);
+    };
+
+    return buf;
 }
 
 // ===========================================================================
@@ -365,6 +448,8 @@ const c_to_zig_specifiers = [_][2][]const u8{
     .{ "a", "f" }, // Zig does not have an 'a' specifier
     .{ "A", "f" }, // Zig does not have an 'A' specifier
 };
+
+// Runtime
 
 test "basic specifier conversion" {
     for (c_to_zig_specifiers) |pair| {
@@ -392,4 +477,29 @@ test "hex with width specifier" {
     defer std.testing.allocator.free(result);
 
     try std.testing.expectEqualSlices(u8, expected, result);
+}
+
+// Comptime
+
+test "basic specifier conversion (comptime)" {
+    inline for (c_to_zig_specifiers) |pair| {
+        const c_spec = pair[0];
+        const expected_zig_spec = pair[1];
+
+        const c_format = std.fmt.comptimePrint("Value: %{s}\n", .{c_spec});
+        const result = comptime cToZigFormatComptime(c_format);
+
+        const expected = std.fmt.comptimePrint("Value: {{{s}}}\n", .{expected_zig_spec});
+
+        try std.testing.expectEqualSlices(u8, expected, &result);
+    }
+}
+
+test "hex with width specifier (comptime)" {
+    const c_format = "Memory address: %08x\n";
+    const expected = "Memory address: {x:0>8}\n";
+
+    const result = comptime cToZigFormatComptime(c_format);
+
+    try std.testing.expectEqualSlices(u8, expected, &result);
 }
