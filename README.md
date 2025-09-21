@@ -1,19 +1,20 @@
 # C-Zig Format Converter
 
 > [!WARNING]
-> This library is incomplete. Currently only C -> Zig format conversion is supported, there are no comptime functions, and the conversion may not be very exact with some of C's flag characters or length modifiers.
+> This library is incomplete. Currently only C -> Zig format conversion is supported and the conversion may not be very exact with some of C's flag characters or length modifiers.
 
 This Zig library converts C format strings (like those used in `printf`) into Zig format strings (like those used in `std.debug.print`)
 E.g:
 - `"counter = %d"` -> `"counter = {d}"`
-- `"Memory address: %08x\n"` -> `"Memory address: {x:0>8}\n"`
+- `"Memory address = %08x\n"` -> `"Memory address ={x:0>8}\n"`
+- `"Percentage = %.2f%%\n"` -> `"Percentage = {d:.2}%""`
 
 ## Basic Usage
 
 ### As a Library
 ```zig
 const std = @import("std");
-const converter = @import("c-zig-format-converter");
+const converter = @import("c-zig-format-converter.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -25,12 +26,14 @@ pub fn main() !void {
     const zig_format = try converter.cToZigFormat(allocator, c_format);
     defer allocator.free(zig_format);
 
-    // Use the converted format string
-    const output = try std.fmt.allocPrint(allocator, zig_format, .{ "Alice", 1337, 98.5 });
-    defer allocator.free(output);
-    
-    std.debug.print("{s}\n", .{output}); // "User Alice has 1337 points (98.50%)"
+    std.debug.print("{s}\n", .{zig_format}); // "User {s} has {d} points ({d:.2}%)"
+
+    // Convert a C format string to Zig format at compile time
+    const zig_format_comptime = converter.cToZigFormatComptime(c_format);
+
+    std.debug.print("{s}\n", .{zig_format_comptime}); // "User {s} has {d} points ({d:.2}%)"
 }
+
 ```
 
 ### As a CLI

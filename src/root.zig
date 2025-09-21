@@ -47,9 +47,9 @@ const ZigSpecifier = enum {
         return switch (c) {
             'd', 'i' => .d,
             'u' => .u,
-            'f', 'F' => .f,
+            'f', 'F' => .d,
             'e', 'E' => .e,
-            'g', 'G' => .f, // Zig does not have a 'g' specifier
+            'g', 'G' => .d, // Zig does not have a 'g' specifier
             'x' => .x,
             'X' => .X,
             'o' => .o,
@@ -343,7 +343,7 @@ const FormatBuffer = struct {
     }
 };
 
-pub fn cToZigFormat(comptime allocator: std.mem.Allocator, c_format: []const u8) ![]u8 {
+pub fn cToZigFormat(allocator: std.mem.Allocator, c_format: []const u8) ![]u8 {
     var zig_format: FormatBuffer = try FormatBuffer.init(allocator, c_format.len * 1);
     errdefer zig_format.deinit();
 
@@ -414,15 +414,18 @@ fn getZigFormatLenFromCFormat(comptime c_format: []const u8) usize {
 // this approach seems sub-optimal, since the string is parsed multiple times,
 // though I have been unable to find a better solution, since comptime var pointers
 // can't be referenced at runtime.
-pub fn cToZigFormatComptime(comptime c_format: []const u8) [getZigFormatLenFromCFormat(c_format)]u8 {
-    var buf: [getZigFormatLenFromCFormat(c_format)]u8 = undefined;
-    var zig_format: ComptimeFormatBuffer = try ComptimeFormatBuffer.init(&buf);
+// (also it will only affect the compilation time, so it is not very important)
+pub inline fn cToZigFormatComptime(comptime c_format: []const u8) [getZigFormatLenFromCFormat(c_format)]u8 {
+    comptime {
+        var buf: [getZigFormatLenFromCFormat(c_format)]u8 = undefined;
+        var zig_format: ComptimeFormatBuffer = try ComptimeFormatBuffer.init(&buf);
 
-    comptime convert_from_c_to_zig(ComptimeFormatBuffer, &zig_format, c_format) catch |err| {
-        @compileError("Invalid format, error: " ++ err);
-    };
+        convert_from_c_to_zig(ComptimeFormatBuffer, &zig_format, c_format) catch |err| {
+            @compileError("Invalid format, error: " ++ err);
+        };
 
-    return buf;
+        return buf;
+    }
 }
 
 // ===========================================================================
@@ -487,7 +490,7 @@ test "basic specifier conversion (comptime)" {
         const expected_zig_spec = pair[1];
 
         const c_format = std.fmt.comptimePrint("Value: %{s}\n", .{c_spec});
-        const result = comptime cToZigFormatComptime(c_format);
+        const result = cToZigFormatComptime(c_format);
 
         const expected = std.fmt.comptimePrint("Value: {{{s}}}\n", .{expected_zig_spec});
 
@@ -499,7 +502,7 @@ test "hex with width specifier (comptime)" {
     const c_format = "Memory address: %08x\n";
     const expected = "Memory address: {x:0>8}\n";
 
-    const result = comptime cToZigFormatComptime(c_format);
+    const result = cToZigFormatComptime(c_format);
 
     try std.testing.expectEqualSlices(u8, expected, &result);
 }
